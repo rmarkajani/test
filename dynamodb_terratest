@@ -1,0 +1,379 @@
+package test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/cobank-acb/cpe-terratest-helpers/src/helpers"
+	"github.com/google/uuid"
+
+	// "github.com/gruntwork-io/terratest/modules/aws"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	test_structure "github.com/gruntwork-io/terratest/modules/test-structure"
+	"github.com/stretchr/testify/assert"
+)
+
+var (
+	cfg            *aws.Config
+	dynamodbClient *dynamodb.Client // AWS dynamoclient
+)
+
+const (
+	awsAccountId = "546345899106"
+	awsRegion    = "us-west-2"
+)
+
+// Initialize defaults for testing
+func init() {
+	// Get the AWS Config
+	awsConfig, err := helpers.GetAwsConfig(awsRegion)
+	if err != nil {
+		panic(err)
+	}
+
+	cfg = awsConfig // Set the AWS Config
+
+	dynamodbClient = dynamodb.NewFromConfig(*cfg) // Create the DynamoDB client
+
+}
+
+func TestDynamoDBPayPerRequest(t *testing.T) {
+	t.Parallel()
+
+	kmsKeyArn, err := helpers.CreateKmsKey(*cfg, awsAccountId)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("successfully created test kms key: %s", *kmsKeyArn)
+
+	defer helpers.DeleteKmsKey(t, *cfg, *kmsKeyArn)
+
+	// Create the required iam role and defer delete until
+	// this test function completes
+	role, err := helpers.CreateIamRole(*cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("successfully created test iam role: %s", *role)
+
+	defer helpers.DeleteIamRole(t, *cfg, *role)
+
+	tmpFolder := test_structure.CopyTerraformFolderToTemp(t, "../", "./")
+
+	randomUUID := uuid.New().String()
+	tableName := "ppr-dynamodb-sandbox-" + randomUUID
+
+	terraformOptions := &terraform.Options{
+		TerraformDir: tmpFolder,
+
+		Vars: map[string]interface{}{
+			"billing_mode":                "PAY_PER_REQUEST",
+			"kms_master_key_id":           *kmsKeyArn,
+			"iam_role_id":                 *role,
+			"hash_key":                    "primary_hash_terratest",
+			"range_key":                   "primary_range_terratest",
+			"table_name":                  tableName,
+			"deletion_protection_enabled": false,
+			"attributes": map[string]interface{}{
+				"primary_hash_terratest": map[string]interface{}{
+					"type": "S",
+				},
+				"primary_range_terratest": map[string]interface{}{
+					"type": "S",
+				},
+				"gsi_terratest_hash_key": map[string]interface{}{
+					"type": "S",
+				},
+				"gsi_terratest_range_key": map[string]interface{}{
+					"type": "S",
+				},
+			},
+			"global_secondary_index": map[string]interface{}{
+				"index": map[string]interface{}{
+					"name":      "terratest-gsi",
+					"hash_key":  "gsi_terratest_hash_key",
+					"range_key": "gsi_terratest_range_key",
+				},
+			},
+		},
+	}
+
+	// Ensure the Terraform destroy gets run at the end of the test
+	defer terraform.Destroy(t, terraformOptions)
+
+	// Run Terraform init, apply and check for errors
+	terraform.InitAndApplyAndIdempotent(t, terraformOptions)
+
+	// Validate if the table exists in the correct region
+	assertDynamoDBTableExists(t, dynamodbClient, tableName)
+
+	insertItems(t, dynamodbClient, tableName)
+
+	insertGSIItems(t, dynamodbClient, tableName)
+
+	// Test BatchGetItem action
+	testBatchGetItem(t, dynamodbClient, tableName)
+
+	// Test Query action
+	testDynamoDBQuery(t, dynamodbClient, tableName)
+
+	testGSIQuery(t, dynamodbClient, tableName)
+
+}
+
+func TestDynamoDBProvisioned(t *testing.T) {
+	t.Parallel()
+
+	kmsKeyArn, err := helpers.CreateKmsKey(*cfg, awsAccountId)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("successfully created test kms key: %s", *kmsKeyArn)
+
+	defer helpers.DeleteKmsKey(t, *cfg, *kmsKeyArn)
+
+	// Create the required iam role and defer delete until
+	// this test function completes
+	role, err := helpers.CreateIamRole(*cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("successfully created test iam role: %s", *role)
+
+	defer helpers.DeleteIamRole(t, *cfg, *role)
+
+	tmpFolder := test_structure.CopyTerraformFolderToTemp(t, "../", "./")
+
+	randomUUID := uuid.New().String()
+	tableName := "ppr-dynamodb-sandbox-" + randomUUID
+
+	terraformOptions := &terraform.Options{
+		TerraformDir: tmpFolder,
+
+		Vars: map[string]interface{}{
+			"billing_mode":                "PROVISIONED",
+			"kms_master_key_id":           *kmsKeyArn,
+			"iam_role_id":                 *role,
+			"hash_key":                    "primary_hash_terratest",
+			"range_key":                   "primary_range_terratest",
+			"table_name":                  tableName,
+			"deletion_protection_enabled": false,
+			"attributes": map[string]interface{}{
+				"primary_hash_terratest": map[string]interface{}{
+					"type": "S",
+				},
+				"primary_range_terratest": map[string]interface{}{
+					"type": "S",
+				},
+				"gsi_terratest_hash_key": map[string]interface{}{
+					"type": "S",
+				},
+				"gsi_terratest_range_key": map[string]interface{}{
+					"type": "S",
+				},
+			},
+			"global_secondary_index": map[string]interface{}{
+				"index": map[string]interface{}{
+					"name":      "terratest-gsi",
+					"hash_key":  "gsi_terratest_hash_key",
+					"range_key": "gsi_terratest_range_key",
+				},
+			},
+		},
+	}
+
+	// Ensure the Terraform destroy gets run at the end of the test
+	defer terraform.Destroy(t, terraformOptions)
+
+	// Run Terraform init, apply and check for errors
+	// Run Terraform init, apply and check for errors
+	terraform.InitAndApplyAndIdempotent(t, terraformOptions)
+
+	// Validate if the table exists in the correct region
+	assertDynamoDBTableExists(t, dynamodbClient, tableName)
+
+	insertItems(t, dynamodbClient, tableName)
+
+	insertGSIItems(t, dynamodbClient, tableName)
+
+	// Test BatchGetItem action
+	testBatchGetItem(t, dynamodbClient, tableName)
+
+	// Test Query action
+	testDynamoDBQuery(t, dynamodbClient, tableName)
+
+	// Test GSI Query action
+	testGSIQuery(t, dynamodbClient, tableName)
+
+}
+
+// validation
+func assertDynamoDBTableExists(t *testing.T, dynamodbClient *dynamodb.Client, tableName string) {
+	input := &dynamodb.DescribeTableInput{
+		TableName: aws.String(tableName),
+	}
+
+	_, err := dynamodbClient.DescribeTable(context.TODO(), input)
+	assert.NoError(t, err, "Table does not exist or cannot be described")
+}
+
+// Insert items into the DynamoDB table
+func insertItems(t *testing.T, dynamodbClient *dynamodb.Client, tableName string) {
+	items := []map[string]types.AttributeValue{
+		{
+			"primary_hash_terratest":  &types.AttributeValueMemberS{Value: "prim_hash_1"},
+			"primary_range_terratest": &types.AttributeValueMemberS{Value: "prim_range_1"},
+		},
+	}
+
+	for _, item := range items {
+		input := &dynamodb.PutItemInput{
+			TableName: aws.String(tableName),
+			Item:      item,
+		}
+
+		_, err := dynamodbClient.PutItem(context.TODO(), input)
+		assert.NoError(t, err)
+	}
+}
+
+func insertGSIItems(t *testing.T, dynamodbClient *dynamodb.Client, tableName string) {
+	items := []map[string]types.AttributeValue{
+		{
+			"primary_hash_terratest":  &types.AttributeValueMemberS{Value: "prim_hash_2"},
+			"primary_range_terratest": &types.AttributeValueMemberS{Value: "prim_range_2"},
+			"gsi_terratest_hash_key":  &types.AttributeValueMemberS{Value: "gsi_hash_1"},
+			"gsi_terratest_range_key": &types.AttributeValueMemberS{Value: "gsi_range_1"},
+		},
+	}
+
+	for _, item := range items {
+		input := &dynamodb.PutItemInput{
+			TableName: aws.String(tableName),
+			Item:      item,
+		}
+
+		_, err := dynamodbClient.PutItem(context.TODO(), input)
+		assert.NoError(t, err)
+	}
+}
+
+func testBatchGetItem(t *testing.T, dynamodbClient *dynamodb.Client, tableName string) {
+	// Define keys to fetch
+	keys := []map[string]types.AttributeValue{
+		{
+			"primary_hash_terratest":  &types.AttributeValueMemberS{Value: "prim_hash_1"},
+			"primary_range_terratest": &types.AttributeValueMemberS{Value: "prim_range_1"},
+		},
+	}
+
+	// Create the request items for BatchGetItem
+	requestItems := make(map[string]types.KeysAndAttributes)
+	requestItems[tableName] = types.KeysAndAttributes{
+		Keys: keys,
+	}
+
+	// Perform BatchGetItem on DynamoDB
+	input := &dynamodb.BatchGetItemInput{
+		RequestItems: requestItems,
+	}
+
+	result, err := dynamodbClient.BatchGetItem(context.TODO(), input)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	// Check if items are returned correctly
+	assert.Equal(t, len(result.Responses[tableName]), 1)
+
+	// Validate the returned items
+	assert.Equal(t, result.Responses[tableName][0]["primary_hash_terratest"].(*types.AttributeValueMemberS).Value, "prim_hash_1")
+}
+
+func testDynamoDBQuery(t *testing.T, dynamoClient *dynamodb.Client, tableName string) {
+	hash_key := "primary_hash_terratest"
+	queryValue := "prim_hash_1"
+
+	//the query input
+	queryInput := &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		KeyConditionExpression: aws.String(fmt.Sprintf("%s = :value", hash_key)),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":value": &types.AttributeValueMemberS{Value: queryValue},
+		},
+	}
+
+	// Perform the query
+	queryOutput, err := dynamoClient.Query(context.TODO(), queryInput)
+	if err != nil {
+		t.Fatalf("Failed to query DynamoDB: %v", err)
+	}
+
+	// Assertions
+	expectedItemCount := 1 // Update with the expected number of items returned
+	assert.Equal(t, expectedItemCount, len(queryOutput.Items), "Unexpected number of items returned")
+
+	// Check specific attribute values
+	if len(queryOutput.Items) > 0 {
+		item := queryOutput.Items[0]
+		expectedValue := "prim_hash_1"
+		expectedAttribute := "primary_hash_terratest"
+		attributeValue :=
+			item[expectedAttribute].(*types.AttributeValueMemberS).Value
+
+		assert.Equal(t, expectedValue, attributeValue, "Unexpected value for attribute")
+	}
+}
+
+func testGSIQuery(t *testing.T, dynamoClient *dynamodb.Client, tableName string) {
+	gsiName := "terratest-gsi"
+	gsiKey := "gsi_terratest_hash_key"
+	gsiKeyValue := "gsi_hash_key_1"
+	expectedAttribute := gsiKey
+	expectedValue := gsiKeyValue
+
+	gsiQueryInput := &dynamodb.QueryInput{
+		TableName:              aws.String(tableName),
+		IndexName:              aws.String(gsiName),
+		KeyConditionExpression: aws.String("#gsi_hk = :value"),
+		ExpressionAttributeNames: map[string]string{
+			"#gsi_hk": gsiKey,
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":value": &types.AttributeValueMemberS{Value: gsiKeyValue},
+		},
+	}
+
+	// Log the query input for debugging
+	fmt.Printf("GSI Query Input: %+v\n", gsiQueryInput)
+
+	gsiQueryOutput, err := dynamoClient.Query(context.TODO(), gsiQueryInput)
+	if err != nil {
+		t.Fatalf("Failed to query GSI: %v", err)
+	}
+
+	// Assertions for GSI query
+	assert.Equal(t, 1, len(gsiQueryOutput.Items), "Unexpected number of items returned from GSI")
+	if len(gsiQueryOutput.Items) > 0 {
+		item := gsiQueryOutput.Items[0]
+		attributeValue := item[expectedAttribute].(*types.AttributeValueMemberS).Value
+		assert.Equal(t, expectedValue, attributeValue, "Unexpected value for attribute in GSI")
+	}
+}
+
+    dynamodb_test.go:363: 
+        	Error Trace:	/home/runner/work/cpe-terraform-aws-dynamodb/cpe-terraform-aws-dynamodb/terratest/dynamodb_test.go:363
+        	            				/home/runner/work/cpe-terraform-aws-dynamodb/cpe-terraform-aws-dynamodb/terratest/dynamodb_test.go:126
+        	Error:      	Not equal: 
+        	            	expected: 1
+        	            	actual  : 0
+        	Test:       	TestDynamoDBPayPerRequest
+        	Messages:   	Unexpected number of items returned from GSI
+TestDynamoDBPayPerRequest 2025-01-17T19:03:45Z retry.go:91: terraform [destroy -auto-approve -input=false -var iam_role_id=c8fad6cd-dde1-46a8-8c23-c853deeea9fc -var deletion_protection_enabled=false -var attributes={"gsi_terratest_range_key" = {"type" = "S"}, "primary_hash_terratest" = {"type" = "S"}, "primary_range_terratest" = {"type" = "S"}, "gsi_terratest_hash_key" = {"type" = "S"}} -var range_key=primary_range_terratest -var table_name=ppr-dynamodb-sandbox-c4c36772-e1b6-43d4-9648-aec4b3b958b7 -var global_secondary_index={"index" = {"name" = "terratest-gsi", "hash_key" = "gsi_terratest_hash_key", "range_key" = "gsi_terratest_range_key"}} -var billing_mode=PAY_PER_REQUEST -var kms_master_key_id=arn:aws:kms:us-west-2:546345899106:key/7a420ba9-0c73-48e4-bf93-27fcb5980831 -var hash_key=primary_hash_terratest -lock=false]
