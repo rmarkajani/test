@@ -1,3 +1,31 @@
-add some stuff.
-
-someone added another line. 
+    apply.go:15: 
+        	Error Trace:	/home/runner/go/pkg/mod/github.com/gruntwork-io/terratest@v0.47.2/modules/terraform/apply.go:15
+        	            				/home/runner/work/cpe-terraform-aws-appconfig/cpe-terraform-aws-appconfig/terratest/appconfig_test.go:109
+        	Error:      	Received unexpected error:
+        	            	FatalError{Underlying: error while running command: exit status 1; ╷
+        	            	│ Error: Invalid multi-line string
+        	            	│ 
+        	            	│   on <value for var.validators> line 1:
+        	            	│   (source code not available)
+        	            	│ 
+        	            	│ Quoted strings may not be split over multiple lines. To produce a
+        	            	│ multi-line string, either use the \n escape to represent a newline
+        	            	│ character or use the "heredoc" multi-line template syntax.
+        	            	╵
+        	            	╷
+        	            	│ Error: Unterminated template string
+        	            	│ 
+        	            	│   on <value for var.validators> line 1:
+        	            	│   (source code not available)
+        	            	│ 
+        	            	│ No closing marker was found for the string.
+        	            	╵
+        	            	╷
+        	            	│ Error: Invalid character
+        	            	│ 
+        	            	│   on <value for var.validators> line 2:
+        	            	│   (source code not available)
+        	            	│ 
+        	            	│ This character is not used within the language.
+        	            	╵}
+        	Test:       	TestAppConfigResources
